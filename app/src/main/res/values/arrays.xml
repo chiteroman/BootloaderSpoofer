@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="scope">
+        <item>io.github.vvb2060.keyattestation</item>
+        <item>com.CIB.Digital.MB</item>
+    </string-array>
+</resources>

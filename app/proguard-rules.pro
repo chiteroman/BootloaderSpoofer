@@ -1,0 +1,1 @@
+-keep class es.chiteroman.bootloaderspoofer.Xposed {public <methods>;}

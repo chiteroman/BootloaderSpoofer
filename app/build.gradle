@@ -1,0 +1,36 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'es.chiteroman.bootloaderspoofer'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "es.chiteroman.bootloaderspoofer"
+        minSdk 24
+        targetSdk 34
+        versionCode 3
+        versionName '1.2'
+        multiDexEnabled false
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.debug
+            multiDexEnabled false
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    buildToolsVersion '34.0.0'
+}
+
+dependencies {
+    compileOnly 'de.robv.android.xposed:api:82'
+}
