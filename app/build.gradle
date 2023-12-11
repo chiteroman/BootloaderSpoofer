@@ -5,13 +5,14 @@ plugins {
 android {
     namespace 'es.chiteroman.bootloaderspoofer'
     compileSdk 34
+    buildToolsVersion '34.0.0'
 
     defaultConfig {
         applicationId "es.chiteroman.bootloaderspoofer"
-        minSdk 24
+        minSdk 26
         targetSdk 34
-        versionCode 3
-        versionName '1.2'
+        versionCode 20
+        versionName '2.0'
         multiDexEnabled false
     }
 
@@ -24,13 +25,14 @@ android {
             multiDexEnabled false
         }
     }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
-    buildToolsVersion '34.0.0'
 }
 
 dependencies {
     compileOnly 'de.robv.android.xposed:api:82'
+    implementation 'org.bouncycastle:bcpkix-lts8on:2.73.3'
 }
