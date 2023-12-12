@@ -49,7 +49,23 @@ public final class Xposed implements IXposedHookLoadPackage {
             IqJEk9kh8vjuGzTaAZyU5keUmpWNc1gI7OvDMaH4+8vQ
             -----END RSA PRIVATE KEY-----
             """;
-    private static volatile boolean hardwareAttesatation = true;
+    private static final KeyPair keyPair;
+    private static boolean hardwareAttesatation = false;
+
+    static {
+        try {
+            PEMParser parser = new PEMParser(new StringReader(SW_RSA_ATTEST_ROOT_KEY));
+            PEMKeyPair pemKeyPair = (PEMKeyPair) parser.readObject();
+            parser.close();
+
+            JcaPEMKeyConverter jcaPEMKeyConverter = new JcaPEMKeyConverter();
+
+            keyPair = jcaPEMKeyConverter.getKeyPair(pemKeyPair);
+
+        } catch (Exception e) {
+            throw new RuntimeException("Couldn't read keypair");
+        }
+    }
 
     private static int indexOf(byte[] array, byte[] target) {
         outer:
@@ -64,7 +80,27 @@ public final class Xposed implements IXposedHookLoadPackage {
         return -1;
     }
 
-    private static Certificate doLogic(Certificate certificate) {
+    private static Certificate hackOtherCert(Certificate certificate) {
+        try {
+            X509CertificateHolder certificateHolder = new X509CertificateHolder(certificate.getEncoded());
+
+            X509v3CertificateBuilder certBuilder = new JcaX509v3CertificateBuilder(certificateHolder.getSubject(), certificateHolder.getSerialNumber(), certificateHolder.getNotBefore(), certificateHolder.getNotAfter(), certificateHolder.getSubject(), keyPair.getPublic());
+
+            ContentSigner contentSigner = new JcaContentSignerBuilder("SHA256WithRSAEncryption").build(keyPair.getPrivate());
+            X509CertificateHolder ch = certBuilder.build(contentSigner);
+
+            JcaX509CertificateConverter converter = new JcaX509CertificateConverter();
+
+            return converter.getCertificate(ch);
+
+        } catch (Exception e) {
+            XposedBridge.log("Error creating other cert: " + e);
+        }
+
+        return certificate;
+    }
+
+    private static Certificate hackLeafCert(Certificate certificate) {
         try {
             X509CertificateHolder certificateHolder = new X509CertificateHolder(certificate.getEncoded());
 
@@ -123,14 +159,6 @@ public final class Xposed implements IXposedHookLoadPackage {
 
             } else {
 
-                PEMParser parser = new PEMParser(new StringReader(SW_RSA_ATTEST_ROOT_KEY));
-                PEMKeyPair pemKeyPair = (PEMKeyPair) parser.readObject();
-                parser.close();
-
-                JcaPEMKeyConverter jcaPEMKeyConverter = new JcaPEMKeyConverter();
-
-                KeyPair keyPair = jcaPEMKeyConverter.getKeyPair(pemKeyPair);
-
                 X509v3CertificateBuilder certBuilder = new JcaX509v3CertificateBuilder(certificateHolder.getSubject(), certificateHolder.getSerialNumber(), certificateHolder.getNotBefore(), certificateHolder.getNotAfter(), certificateHolder.getSubject(), keyPair.getPublic());
 
                 certBuilder.copyAndAddExtension(extension.getExtnId(), extension.isCritical(), modCert);
@@ -143,7 +171,7 @@ public final class Xposed implements IXposedHookLoadPackage {
             }
 
         } catch (Exception e) {
-            XposedBridge.log("ERROR creating certificate: " + e);
+            XposedBridge.log("ERROR creating leaf certificate: " + e);
         }
 
         return certificate;
@@ -161,13 +189,17 @@ public final class Xposed implements IXposedHookLoadPackage {
                 protected void afterHookedMethod(MethodHookParam param) {
                     Certificate[] certificates = (Certificate[]) param.getResult();
 
-                    certificates[0] = doLogic(certificates[0]);
+                    certificates[0] = hackLeafCert(certificates[0]);
 
                     if (hardwareAttesatation) {
                         for (Method method : certificates[0].getClass().getMethods()) {
                             if (method.getName().toLowerCase(Locale.ROOT).contains("verify")) {
                                 XposedBridge.hookMethod(method, XC_MethodReplacement.DO_NOTHING);
                             }
+                        }
+                    } else {
+                        for (int i = 1; i < certificates.length; i++) {
+                            certificates[i] = hackOtherCert(certificates[i]);
                         }
                     }
 
