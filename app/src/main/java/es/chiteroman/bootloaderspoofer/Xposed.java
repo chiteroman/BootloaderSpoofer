@@ -31,6 +31,9 @@ import org.bouncycastle.util.io.pem.PemReader;
 import java.io.StringReader;
 import java.math.BigInteger;
 import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.KeyStore;
+import java.security.KeyStoreSpi;
 import java.security.SecureRandom;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
@@ -48,7 +51,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 public final class Xposed implements IXposedHookLoadPackage {
 
-    private static final KeyPair EC_KEYPAIR;
+    public static final KeyPair EC_KEYPAIR;
     private static final Map<Integer, ASN1Primitive> map = new HashMap<>();
     private static final SecureRandom random = new SecureRandom();
     private static byte[] attestationChallengeBytes = new byte[0];
@@ -327,65 +330,63 @@ public final class Xposed implements IXposedHookLoadPackage {
     }
 
     @Override
-    public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
-        try {
-            Class<?> keyGenBuilder = XposedHelpers.findClass("android.security.keystore.KeyGenParameterSpec.Builder", lpparam.classLoader);
-            XposedHelpers.findAndHookMethod(keyGenBuilder, "setAttestationChallenge", byte[].class, new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) {
-                    attestationChallengeBytes = (byte[]) param.args[0];
-                    XposedBridge.log("attestationChallenge: " + Arrays.toString(attestationChallengeBytes));
-                }
-            });
+    public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
 
-            Class<?> keyPairGenerator = XposedHelpers.findClass("android.security.keystore2.AndroidKeyStoreKeyPairGeneratorSpi", lpparam.classLoader);
-            XposedHelpers.findAndHookMethod(keyPairGenerator, "generateKeyPair", XC_MethodReplacement.returnConstant(EC_KEYPAIR));
+        KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance("EC", "AndroidKeyStore");
+        XposedHelpers.findAndHookMethod(keyPairGenerator.getClass(), "generateKeyPair", XC_MethodReplacement.returnConstant(EC_KEYPAIR));
 
-            Class<?> keyStoreSpi = XposedHelpers.findClass("android.security.keystore2.AndroidKeyStoreSpi", lpparam.classLoader);
-            XposedHelpers.findAndHookMethod(keyStoreSpi, "engineGetCertificateChain", String.class, new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    try {
-                        Certificate[] otherCerts = getOtherCerts();
+        Class<?> keyGenBuilder = XposedHelpers.findClassIfExists("android.security.keystore.KeyGenParameterSpec.Builder", lpparam.classLoader);
+        XposedHelpers.findAndHookMethod(keyGenBuilder, "setAttestationChallenge", byte[].class, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                attestationChallengeBytes = (byte[]) param.args[0];
+                XposedBridge.log("attestationChallenge: " + Arrays.toString(attestationChallengeBytes));
+            }
+        });
 
-                        Certificate[] hackCerts = new Certificate[4];
+        KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
+        KeyStoreSpi keyStoreSpi = (KeyStoreSpi) XposedHelpers.getObjectField(keyStore, "keyStoreSpi");
+        XposedHelpers.findAndHookMethod(keyStoreSpi.getClass(), "engineGetCertificateChain", String.class, new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                try {
+                    Certificate[] otherCerts = getOtherCerts();
 
-                        System.arraycopy(otherCerts, 0, hackCerts, 1, otherCerts.length);
+                    Certificate[] hackCerts = new Certificate[4];
 
-                        Certificate[] certificates = (Certificate[]) param.getResult();
+                    System.arraycopy(otherCerts, 0, hackCerts, 1, otherCerts.length);
 
-                        if (certificates == null || certificates.length == 0) {
-                            brokenTEE = true;
+                    Certificate[] certificates = (Certificate[]) param.getResult();
 
-                            XposedBridge.log("Uhhh, seems like you have a broken TEE.");
-                            hackCerts[0] = brokenTeeLeafCert();
+                    if (certificates == null || certificates.length == 0) {
+                        brokenTEE = true;
 
-                        } else {
-                            brokenTEE = false;
+                        XposedBridge.log("Uhhh, seems like you have a broken TEE.");
+                        hackCerts[0] = brokenTeeLeafCert();
 
-                            Certificate leaf = certificates[0];
+                    } else {
+                        brokenTEE = false;
 
-                            if (!(leaf instanceof X509Certificate x509Certificate)) return;
+                        Certificate leaf = certificates[0];
 
-                            byte[] bytes = x509Certificate.getExtensionValue("1.3.6.1.4.1.11129.2.1.17");
+                        if (!(leaf instanceof X509Certificate x509Certificate)) return;
 
-                            if (bytes == null || bytes.length == 0) {
-                                XposedBridge.log("Leaf certificate doesn't contain attestation extensions... Ignoring it.");
-                                return;
-                            }
+                        byte[] bytes = x509Certificate.getExtensionValue("1.3.6.1.4.1.11129.2.1.17");
 
-                            hackCerts[0] = hackLeafCert(x509Certificate);
+                        if (bytes == null || bytes.length == 0) {
+                            XposedBridge.log("Leaf certificate doesn't contain attestation extensions... Ignoring it.");
+                            return;
                         }
 
-                        param.setResult(hackCerts);
-
-                    } catch (Throwable t) {
-                        XposedBridge.log("ERROR: " + t);
+                        hackCerts[0] = hackLeafCert(x509Certificate);
                     }
+
+                    param.setResult(hackCerts);
+
+                } catch (Throwable t) {
+                    XposedBridge.log("ERROR: " + t);
                 }
-            });
-        } catch (Throwable t) {
-            XposedBridge.log("ERROR: " + t);
-        }
+            }
+        });
     }
 }
