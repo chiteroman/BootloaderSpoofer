@@ -7,6 +7,47 @@ public final class Data {
             AwEHoUQDQgAEwCzLu4AL1c86SRwHKjgGlk3L16fbU3U8zWUa1hB+OwCxwqvyD686
             HLsIKAgZluKMIAQQKRalYapz+tPSdJ4mig==
             -----END EC PRIVATE KEY-----""";
+
+    public static final String RSA_PRIVATE_KEY = """
+            -----BEGIN RSA PRIVATE KEY-----
+            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
+            -----END RSA PRIVATE KEY-----""";
     public static final String CERT_1 = """
             -----BEGIN CERTIFICATE-----
             MIIB9DCCAXqgAwIBAgIRAM/Qn0kkZ6jXjzyH+K6CsO0wCgYIKoZIzj0EAwIwOTEM
