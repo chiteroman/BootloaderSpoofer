@@ -1,5 +1,13 @@
 package es.chiteroman.bootloaderspoofer;
 
+import android.app.AndroidAppHelper;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.content.pm.Signature;
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyProperties;
+import android.util.Log;
+
 import org.bouncycastle.asn1.ASN1Boolean;
 import org.bouncycastle.asn1.ASN1Encodable;
 import org.bouncycastle.asn1.ASN1Enumerated;
@@ -7,9 +15,7 @@ import org.bouncycastle.asn1.ASN1Integer;
 import org.bouncycastle.asn1.ASN1Null;
 import org.bouncycastle.asn1.ASN1ObjectIdentifier;
 import org.bouncycastle.asn1.ASN1OctetString;
-import org.bouncycastle.asn1.ASN1Primitive;
 import org.bouncycastle.asn1.ASN1Sequence;
-import org.bouncycastle.asn1.ASN1TaggedObject;
 import org.bouncycastle.asn1.DERNull;
 import org.bouncycastle.asn1.DEROctetString;
 import org.bouncycastle.asn1.DLSequence;
@@ -39,8 +45,6 @@ import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
 import java.util.Arrays;
 import java.util.Date;
-import java.util.HashMap;
-import java.util.Map;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -50,66 +54,54 @@ import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 public final class Xposed implements IXposedHookLoadPackage {
-
-    public static final KeyPair EC_KEYPAIR;
-    private static final Map<Integer, ASN1Primitive> map = new HashMap<>();
+    private static final String TAG = "BootloaderSpoofer";
+    private static final KeyPair EC_KEYPAIR, RSA_KEYPAIR;
+    private static final Certificate[] certsChain = new Certificate[3];
     private static final SecureRandom random = new SecureRandom();
     private static byte[] attestationChallengeBytes = new byte[0];
-    private static boolean brokenTEE = false;
+    private static Signature[] signatures;
+    private static int versionCode;
+    private static String packageName;
 
     static {
         try {
-            PEMParser parser = new PEMParser(new StringReader(Data.EC_PRIVATE_KEY));
-            Object o = parser.readObject();
-            parser.close();
+            Object o;
+            PEMKeyPair pemKeyPair;
 
-            PEMKeyPair pemKeyPair = (PEMKeyPair) o;
+            try (PEMParser parser = new PEMParser(new StringReader(Data.EC_PRIVATE_KEY))) {
+                o = parser.readObject();
+            }
+
+            pemKeyPair = (PEMKeyPair) o;
 
             EC_KEYPAIR = new JcaPEMKeyConverter().getKeyPair(pemKeyPair);
+
+            try (PEMParser parser = new PEMParser(new StringReader(Data.RSA_PRIVATE_KEY))) {
+                o = parser.readObject();
+            }
+
+            pemKeyPair = (PEMKeyPair) o;
+
+            RSA_KEYPAIR = new JcaPEMKeyConverter().getKeyPair(pemKeyPair);
+
+            certsChain[0] = parseOtherCert(Data.CERT_1);
+            certsChain[1] = parseOtherCert(Data.CERT_2);
+            certsChain[2] = parseOtherCert(Data.CERT_3);
 
         } catch (Throwable t) {
             throw new RuntimeException(t);
         }
     }
 
-    private static X509CertificateHolder parseOtherCert(int num) {
-        String str = "";
+    private static Certificate parseOtherCert(String cert) throws Exception {
 
-        if (num == 1) str = Data.CERT_1;
-        else if (num == 2) str = Data.CERT_2;
-        else if (num == 3) str = Data.CERT_3;
+        PemReader reader = new PemReader(new StringReader(cert));
+        PemObject pemObject = reader.readPemObject();
+        reader.close();
 
-        try {
-            PemReader reader = new PemReader(new StringReader(str));
-            PemObject pemObject = reader.readPemObject();
-            reader.close();
+        X509CertificateHolder holder = new X509CertificateHolder(pemObject.getContent());
 
-            return new X509CertificateHolder(pemObject.getContent());
-
-        } catch (Exception e) {
-            XposedBridge.log("ERROR, couldn't parse other cert " + num + " : " + e);
-            throw new RuntimeException();
-        }
-    }
-
-    private static Certificate[] getOtherCerts() throws Throwable {
-
-        var holder_cert_1 = parseOtherCert(1);
-        var holder_cert_2 = parseOtherCert(2);
-        var holder_cert_3 = parseOtherCert(3);
-
-        Certificate c1 = new JcaX509CertificateConverter().getCertificate(holder_cert_1);
-        Certificate c2 = new JcaX509CertificateConverter().getCertificate(holder_cert_2);
-        Certificate c3 = new JcaX509CertificateConverter().getCertificate(holder_cert_3);
-
-        return new Certificate[]{c1, c2, c3};
-    }
-
-    private static ASN1Primitive getPrimitiveFromList(int tagNo) {
-
-        if (map.containsKey(tagNo)) return map.get(tagNo);
-
-        return null;
+        return new JcaX509CertificateConverter().getCertificate(holder);
     }
 
     private static Extension addHackedExtension() {
@@ -144,69 +136,36 @@ public final class Xposed implements IXposedHookLoadPackage {
             ASN1Integer AvendorPatchLevel = new ASN1Integer(20231217);
             ASN1Integer AbootPatchLevel = new ASN1Integer(20231217);
 
-            ASN1Primitive AcreationDateTime = null;
-            ASN1Primitive Aorigin = null;
-            ASN1Primitive AattestationApplicationId = null;
-
-            if (!brokenTEE) {
-                AcreationDateTime = getPrimitiveFromList(701);
-                Aorigin = getPrimitiveFromList(702);
-                AattestationApplicationId = getPrimitiveFromList(709);
-            }
+            ASN1Integer AcreationDateTime = new ASN1Integer(System.currentTimeMillis());
+            ASN1Integer Aorigin = new ASN1Integer(0);
 
             var purpose = new DLTaggedObject(true, 1, Apurpose);
             var algorithm = new DLTaggedObject(true, 2, Aalgorithm);
             var keySize = new DLTaggedObject(true, 3, AkeySize);
             var ecCurve = new DLTaggedObject(true, 10, AecCurve);
             var noAuthRequired = new DLTaggedObject(true, 503, AnoAuthRequired);
+            var creationDateTime = new DLTaggedObject(true, 701, AcreationDateTime);
+            var origin = new DLTaggedObject(true, 702, Aorigin);
             var rootOfTrust = new DLTaggedObject(true, 704, rootOfTrustSeq);
             var osVersion = new DLTaggedObject(true, 705, AosVersion);
             var osPatchLevel = new DLTaggedObject(true, 706, AosPatchLevel);
             var vendorPatchLevel = new DLTaggedObject(true, 718, AvendorPatchLevel);
             var bootPatchLevel = new DLTaggedObject(true, 719, AbootPatchLevel);
 
-            ASN1TaggedObject creationDateTime = null;
-            ASN1TaggedObject origin = null;
-            ASN1TaggedObject attestationApplicationId = null;
-
-            if (!brokenTEE) {
-                creationDateTime = new DLTaggedObject(true, 701, AcreationDateTime);
-                origin = new DLTaggedObject(true, 702, Aorigin);
-                attestationApplicationId = new DLTaggedObject(true, 709, AattestationApplicationId);
-            }
-
-            ASN1Encodable[] teeEnforcedEncodables;
-
-            if (brokenTEE) {
-                teeEnforcedEncodables = new ASN1Encodable[]{
-                        purpose,
-                        algorithm,
-                        keySize,
-                        ecCurve,
-                        noAuthRequired,
-                        rootOfTrust,
-                        osVersion,
-                        osPatchLevel,
-                        vendorPatchLevel,
-                        bootPatchLevel
-                };
-            } else {
-                teeEnforcedEncodables = new ASN1Encodable[]{
-                        purpose,
-                        algorithm,
-                        keySize,
-                        ecCurve,
-                        noAuthRequired,
-                        creationDateTime,
-                        origin,
-                        rootOfTrust,
-                        osVersion,
-                        osPatchLevel,
-                        attestationApplicationId,
-                        vendorPatchLevel,
-                        bootPatchLevel
-                };
-            }
+            ASN1Encodable[] teeEnforcedEncodables = {
+                    purpose,
+                    algorithm,
+                    keySize,
+                    ecCurve,
+                    noAuthRequired,
+                    creationDateTime,
+                    origin,
+                    rootOfTrust,
+                    osVersion,
+                    osPatchLevel,
+                    vendorPatchLevel,
+                    bootPatchLevel
+            };
 
             ASN1Integer attestationVersion = new ASN1Integer(4);
             ASN1Enumerated attestationSecurityLevel = new ASN1Enumerated(2);
@@ -235,44 +194,14 @@ public final class Xposed implements IXposedHookLoadPackage {
             return new Extension(new ASN1ObjectIdentifier("1.3.6.1.4.1.11129.2.1.17"), true, keyDescriptionOctetStr);
 
         } catch (Exception e) {
-            XposedBridge.log("error create extensions: " + e);
+            Log.e(TAG, "error create extensions: " + e);
         }
 
         return null;
     }
 
-    private static void parseKeyDescription(ASN1Sequence keyDescription) {
-        ASN1Sequence swEnforcedAuthList = (ASN1Sequence) keyDescription.getObjectAt(6).toASN1Primitive();
-        ASN1Sequence teeEnforcedAuthList = (ASN1Sequence) keyDescription.getObjectAt(7).toASN1Primitive();
+    private static Certificate hackLeafCert() throws Exception {
 
-        for (ASN1Encodable encodable : swEnforcedAuthList) {
-            ASN1TaggedObject taggedObject = (ASN1TaggedObject) encodable;
-
-            int tagNo = taggedObject.getTagNo();
-            ASN1Primitive asn1Primitive = taggedObject.getBaseObject().toASN1Primitive();
-
-            if (asn1Primitive == null) {
-                XposedBridge.log("ERROR, couldn't parse " + tagNo + " object!");
-            } else {
-                map.put(tagNo, asn1Primitive);
-            }
-        }
-
-        for (ASN1Encodable encodable : teeEnforcedAuthList) {
-            ASN1TaggedObject taggedObject = (ASN1TaggedObject) encodable;
-
-            int tagNo = taggedObject.getTagNo();
-            ASN1Primitive asn1Primitive = taggedObject.getBaseObject().toASN1Primitive();
-
-            if (asn1Primitive == null) {
-                XposedBridge.log("ERROR, couldn't parse " + tagNo + " object!");
-            } else {
-                map.put(tagNo, asn1Primitive);
-            }
-        }
-    }
-
-    private static Certificate brokenTeeLeafCert() throws Throwable {
         var certBuilder = new JcaX509v3CertificateBuilder(
                 new X500Name("CN=chiteroman"),
                 new BigInteger(128, random),
@@ -291,56 +220,38 @@ public final class Xposed implements IXposedHookLoadPackage {
         return new JcaX509CertificateConverter().getCertificate(certHolder);
     }
 
-    private static Certificate hackLeafCert(X509Certificate certificate) throws Throwable {
-        var holder = new X509CertificateHolder(certificate.getEncoded());
-
-        var certBuilder = new JcaX509v3CertificateBuilder(
-                holder.getIssuer(),
-                holder.getSerialNumber(),
-                holder.getNotBefore(),
-                holder.getNotAfter(),
-                holder.getSubject(),
-                EC_KEYPAIR.getPublic()
-        );
-
-        for (Object extensionOID : holder.getExtensionOIDs()) {
-
-            ASN1ObjectIdentifier identifier = (ASN1ObjectIdentifier) extensionOID;
-
-            if ("1.3.6.1.4.1.11129.2.1.17".equals(identifier.getId())) continue;
-
-            Extension e = holder.getExtension(identifier);
-
-            certBuilder.addExtension(e);
-        }
-
-        Extension extension = holder.getExtension(new ASN1ObjectIdentifier("1.3.6.1.4.1.11129.2.1.17"));
-
-        ASN1Sequence keyDescription = ASN1Sequence.getInstance(extension.getExtnValue().getOctets());
-
-        parseKeyDescription(keyDescription);
-
-        certBuilder.addExtension(addHackedExtension());
-
-        ContentSigner contentSigner = new JcaContentSignerBuilder("SHA256withECDSA").build(EC_KEYPAIR.getPrivate());
-
-        X509CertificateHolder certHolder = certBuilder.build(contentSigner);
-
-        return new JcaX509CertificateConverter().getCertificate(certHolder);
-    }
-
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
 
-        KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance("EC", "AndroidKeyStore");
-        XposedHelpers.findAndHookMethod(keyPairGenerator.getClass(), "generateKeyPair", XC_MethodReplacement.returnConstant(EC_KEYPAIR));
+        PackageManager packageManager = AndroidAppHelper.currentApplication().getPackageManager();
 
-        Class<?> keyGenBuilder = XposedHelpers.findClassIfExists("android.security.keystore.KeyGenParameterSpec.Builder", lpparam.classLoader);
-        XposedHelpers.findAndHookMethod(keyGenBuilder, "setAttestationChallenge", byte[].class, new XC_MethodHook() {
+        PackageInfo packageInfo = packageManager.getPackageInfo(lpparam.packageName, 0);
+
+        packageName = lpparam.packageName;
+        signatures = packageInfo.signatures;
+        versionCode = packageInfo.versionCode;
+
+        Class<?> AndroidKeyStoreKeyPairGeneratorSpi = XposedHelpers.findClassIfExists("android.security.keystore2.AndroidKeyStoreKeyPairGeneratorSpi", lpparam.classLoader);
+
+        if (AndroidKeyStoreKeyPairGeneratorSpi == null) {
+
+            KeyPairGenerator keyPairGenerator1 = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore");
+            XposedHelpers.findAndHookMethod(keyPairGenerator1.getClass(), "generateKeyPair", XC_MethodReplacement.returnConstant(EC_KEYPAIR));
+            XposedHelpers.findAndHookMethod(keyPairGenerator1.getClass(), "genKeyPair", XC_MethodReplacement.returnConstant(EC_KEYPAIR));
+
+            KeyPairGenerator keyPairGenerator2 = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_RSA, "AndroidKeyStore");
+            XposedHelpers.findAndHookMethod(keyPairGenerator2.getClass(), "generateKeyPair", XC_MethodReplacement.returnConstant(RSA_KEYPAIR));
+            XposedHelpers.findAndHookMethod(keyPairGenerator1.getClass(), "genKeyPair", XC_MethodReplacement.returnConstant(RSA_KEYPAIR));
+
+        } else {
+            XposedHelpers.findAndHookMethod(AndroidKeyStoreKeyPairGeneratorSpi, "generateKeyPair", XC_MethodReplacement.returnConstant(EC_KEYPAIR));
+        }
+
+        XposedHelpers.findAndHookMethod(KeyGenParameterSpec.Builder.class, "setAttestationChallenge", byte[].class, new XC_MethodHook() {
             @Override
-            protected void beforeHookedMethod(MethodHookParam param) {
+            protected void afterHookedMethod(MethodHookParam param) {
                 attestationChallengeBytes = (byte[]) param.args[0];
-                XposedBridge.log("attestationChallenge: " + Arrays.toString(attestationChallengeBytes));
+                Log.d(TAG, "attestationChallenge: " + Arrays.toString(attestationChallengeBytes));
             }
         });
 
@@ -349,43 +260,42 @@ public final class Xposed implements IXposedHookLoadPackage {
         XposedHelpers.findAndHookMethod(keyStoreSpi.getClass(), "engineGetCertificateChain", String.class, new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam param) {
+                Certificate[] certificates = null;
+
                 try {
-                    Certificate[] otherCerts = getOtherCerts();
+                    certificates = (Certificate[]) param.getResultOrThrowable();
+                } catch (Throwable e) {
+                    XposedBridge.log("Couldn't get original certificate chain, broken TEE ?");
+                }
 
-                    Certificate[] hackCerts = new Certificate[4];
+                Certificate[] hackCerts = new Certificate[4];
 
-                    System.arraycopy(otherCerts, 0, hackCerts, 1, otherCerts.length);
+                System.arraycopy(certsChain, 0, hackCerts, 1, certsChain.length);
 
-                    Certificate[] certificates = (Certificate[]) param.getResult();
+                if (certificates != null && certificates.length > 1) {
 
-                    if (certificates == null || certificates.length == 0) {
-                        brokenTEE = true;
+                    Certificate leaf = certificates[0];
 
-                        XposedBridge.log("Uhhh, seems like you have a broken TEE.");
-                        hackCerts[0] = brokenTeeLeafCert();
+                    if (!(leaf instanceof X509Certificate x509Certificate)) return;
 
-                    } else {
-                        brokenTEE = false;
+                    byte[] bytes = x509Certificate.getExtensionValue("1.3.6.1.4.1.11129.2.1.17");
 
-                        Certificate leaf = certificates[0];
-
-                        if (!(leaf instanceof X509Certificate x509Certificate)) return;
-
-                        byte[] bytes = x509Certificate.getExtensionValue("1.3.6.1.4.1.11129.2.1.17");
-
-                        if (bytes == null || bytes.length == 0) {
-                            XposedBridge.log("Leaf certificate doesn't contain attestation extensions... Ignoring it.");
-                            return;
-                        }
-
-                        hackCerts[0] = hackLeafCert(x509Certificate);
+                    if (bytes == null || bytes.length == 0) {
+                        XposedBridge.log("Leaf certificate doesn't contain attestation extensions... Ignoring it.");
+                        return;
                     }
 
-                    param.setResult(hackCerts);
-
-                } catch (Throwable t) {
-                    XposedBridge.log("ERROR: " + t);
+                } else {
+                    Log.d(TAG, "Original certificate chain is null or empty... Broken TEE ?");
                 }
+
+                try {
+                    hackCerts[0] = hackLeafCert();
+                } catch (Exception e) {
+                    Log.e(TAG, "ERROR creating hacked leaf certificate: " + e);
+                }
+
+                param.setResult(hackCerts);
             }
         });
     }
