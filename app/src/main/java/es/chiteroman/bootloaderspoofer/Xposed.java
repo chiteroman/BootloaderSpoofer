@@ -103,9 +103,6 @@ public final class Xposed implements IXposedHookLoadPackage {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-
-        XposedBridge.log("[BootloaderSpoofer] Loaded " + map.size() + " keys!");
-        XposedBridge.log("[BootloaderSpoofer] Loaded " + numberOfCerts + " certificates!");
     }
 
     private static KeyPair parseKeyPair(String key) throws Exception {
