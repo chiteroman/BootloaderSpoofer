@@ -2,5 +2,6 @@
 <resources>
     <string-array name="scope">
         <item>io.github.vvb2060.keyattestation</item>
+        <item>io.github.vvb2060.mahoshojo</item>
     </string-array>
 </resources>

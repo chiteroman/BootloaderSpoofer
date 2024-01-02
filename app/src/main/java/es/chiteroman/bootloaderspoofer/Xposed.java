@@ -1,8 +1,8 @@
 package es.chiteroman.bootloaderspoofer;
 
 import android.app.AndroidAppHelper;
+import android.app.Application;
 import android.content.Context;
-import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
@@ -39,6 +39,8 @@ import org.bouncycastle.util.io.pem.PemReader;
 import java.io.StringReader;
 import java.math.BigInteger;
 import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.KeyPairGeneratorSpi;
 import java.security.KeyStore;
 import java.security.KeyStoreSpi;
 import java.security.SecureRandom;
@@ -50,6 +52,7 @@ import java.util.LinkedList;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
+import de.robv.android.xposed.XC_MethodReplacement;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
@@ -537,8 +540,7 @@ public final class Xposed implements IXposedHookLoadPackage {
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
 
-        PackageManager pm = AndroidAppHelper.currentApplication().getPackageManager();
-        SharedPreferences sp = AndroidAppHelper.currentApplication().getSharedPreferences("settings", Context.MODE_PRIVATE);
+        if (!lpparam.isFirstApplication) return;
 
         final var systemFeatureHook = new XC_MethodHook() {
             @Override
@@ -554,52 +556,63 @@ public final class Xposed implements IXposedHookLoadPackage {
             }
         };
 
-        XposedHelpers.findAndHookMethod(pm.getClass(), "hasSystemFeature", String.class, systemFeatureHook);
-        XposedHelpers.findAndHookMethod(pm.getClass(), "hasSystemFeature", String.class, int.class, systemFeatureHook);
+        try {
+            Application app = AndroidAppHelper.currentApplication();
 
-        XposedHelpers.findAndHookMethod(sp.getClass(), "getBoolean", String.class, boolean.class, new XC_MethodHook() {
-            @Override
-            protected void beforeHookedMethod(MethodHookParam param) {
-                String key = (String) param.args[0];
+            Class<?> PackageManagerClass, SharedPreferencesClass;
 
-                if ("prefer_attest_key".equals(key)) param.setResult(Boolean.FALSE);
+            if (app == null) {
+                PackageManagerClass = XposedHelpers.findClass("android.app.ApplicationPackageManager", lpparam.classLoader);
+                SharedPreferencesClass = XposedHelpers.findClass("android.app.SharedPreferencesImpl", lpparam.classLoader);
+            } else {
+                PackageManagerClass = app.getPackageManager().getClass();
+                SharedPreferencesClass = app.getSharedPreferences("settings", Context.MODE_PRIVATE).getClass();
             }
-        });
 
-        XposedHelpers.findAndHookMethod(KeyGenParameterSpec.Builder.class, "setAttestationChallenge", byte[].class, new XC_MethodHook() {
-            @Override
-            protected void beforeHookedMethod(MethodHookParam param) {
-                attestationChallengeBytes = (byte[]) param.args[0];
-            }
-        });
+            XposedHelpers.findAndHookMethod(PackageManagerClass, "hasSystemFeature", String.class, systemFeatureHook);
+            XposedHelpers.findAndHookMethod(PackageManagerClass, "hasSystemFeature", String.class, int.class, systemFeatureHook);
 
-        XposedHelpers.findAndHookMethod("android.security.keystore2.AndroidKeyStoreKeyPairGeneratorSpi", lpparam.classLoader, "generateKeyPair", new XC_MethodHook() {
-            @Override
-            protected void afterHookedMethod(MethodHookParam param) {
-                KeyPair kp = null;
+            XposedHelpers.findAndHookMethod(SharedPreferencesClass, "getBoolean", String.class, boolean.class, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    String key = (String) param.args[0];
 
-                try {
-                    kp = (KeyPair) param.getResultOrThrowable();
-                } catch (Throwable t) {
-                    XposedBridge.log(t);
+                    if ("prefer_attest_key".equals(key)) param.setResult(Boolean.FALSE);
                 }
+            });
+        } catch (Throwable t) {
+            XposedBridge.log(t);
+        }
 
-                if (kp == null) {
-
-                    kp = keyPair_EC;
-
-                } else {
-                    String algorithm = kp.getPrivate().getAlgorithm();
-                    if (KeyProperties.KEY_ALGORITHM_EC.equals(algorithm)) {
-                        kp = keyPair_EC;
-                    } else {
-                        kp = keyPair_RSA;
-                    }
+        try {
+            XposedHelpers.findAndHookMethod(KeyGenParameterSpec.Builder.class, "setAttestationChallenge", byte[].class, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    attestationChallengeBytes = (byte[]) param.args[0];
                 }
+            });
+        } catch (Throwable t) {
+            XposedBridge.log(t);
+        }
 
-                param.setResult(kp);
-            }
-        });
+        try {
+            KeyPairGeneratorSpi keyPairGeneratorSpi_EC = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore");
+            XposedHelpers.findAndHookMethod(keyPairGeneratorSpi_EC.getClass(), "generateKeyPair", new XC_MethodReplacement() {
+                @Override
+                protected Object replaceHookedMethod(MethodHookParam param) {
+                    return keyPair_EC;
+                }
+            });
+            KeyPairGeneratorSpi keyPairGeneratorSpi_RSA = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_RSA, "AndroidKeyStore");
+            XposedHelpers.findAndHookMethod(keyPairGeneratorSpi_RSA.getClass(), "generateKeyPair", new XC_MethodReplacement() {
+                @Override
+                protected Object replaceHookedMethod(MethodHookParam param) {
+                    return keyPair_RSA;
+                }
+            });
+        } catch (Throwable t) {
+            XposedBridge.log(t);
+        }
 
         try {
             KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
