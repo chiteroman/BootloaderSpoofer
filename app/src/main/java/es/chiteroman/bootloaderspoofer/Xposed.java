@@ -1,5 +1,9 @@
 package es.chiteroman.bootloaderspoofer;
 
+import android.app.AndroidAppHelper;
+import android.content.Context;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 
@@ -533,16 +537,51 @@ public final class Xposed implements IXposedHookLoadPackage {
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
 
-        Class<?> AndroidKeyStoreKeyPairGeneratorSpi = XposedHelpers.findClassIfExists("android.security.keystore2.AndroidKeyStoreKeyPairGeneratorSpi", lpparam.classLoader);
+        PackageManager pm = AndroidAppHelper.currentApplication().getPackageManager();
+        SharedPreferences sp = AndroidAppHelper.currentApplication().getSharedPreferences("settings", Context.MODE_PRIVATE);
 
-        XposedHelpers.findAndHookMethod(AndroidKeyStoreKeyPairGeneratorSpi, "generateKeyPair", new XC_MethodHook() {
+        final var systemFeatureHook = new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                String featureName = (String) param.args[0];
+
+                if (PackageManager.FEATURE_STRONGBOX_KEYSTORE.equals(featureName))
+                    param.setResult(Boolean.FALSE);
+                else if (PackageManager.FEATURE_KEYSTORE_APP_ATTEST_KEY.equals(featureName))
+                    param.setResult(Boolean.FALSE);
+                else if ("android.software.device_id_attestation".equals(featureName))
+                    param.setResult(Boolean.FALSE);
+            }
+        };
+
+        XposedHelpers.findAndHookMethod(pm.getClass(), "hasSystemFeature", String.class, systemFeatureHook);
+        XposedHelpers.findAndHookMethod(pm.getClass(), "hasSystemFeature", String.class, int.class, systemFeatureHook);
+
+        XposedHelpers.findAndHookMethod(sp.getClass(), "getBoolean", String.class, boolean.class, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                String key = (String) param.args[0];
+
+                if ("prefer_attest_key".equals(key)) param.setResult(Boolean.FALSE);
+            }
+        });
+
+        XposedHelpers.findAndHookMethod(KeyGenParameterSpec.Builder.class, "setAttestationChallenge", byte[].class, new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                attestationChallengeBytes = (byte[]) param.args[0];
+            }
+        });
+
+        XposedHelpers.findAndHookMethod("android.security.keystore2.AndroidKeyStoreKeyPairGeneratorSpi", lpparam.classLoader, "generateKeyPair", new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam param) {
                 KeyPair kp = null;
 
                 try {
                     kp = (KeyPair) param.getResultOrThrowable();
-                } catch (Throwable ignored) {
+                } catch (Throwable t) {
+                    XposedBridge.log(t);
                 }
 
                 if (kp == null) {
@@ -559,13 +598,6 @@ public final class Xposed implements IXposedHookLoadPackage {
                 }
 
                 param.setResult(kp);
-            }
-        });
-
-        XposedHelpers.findAndHookMethod(KeyGenParameterSpec.Builder.class, "setAttestationChallenge", byte[].class, new XC_MethodHook() {
-            @Override
-            protected void beforeHookedMethod(MethodHookParam param) {
-                attestationChallengeBytes = (byte[]) param.args[0];
             }
         });
 

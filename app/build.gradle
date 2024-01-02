@@ -11,9 +11,8 @@ android {
         applicationId "es.chiteroman.bootloaderspoofer"
         minSdk 26
         targetSdk 34
-        versionCode 36
-        versionName '3.6'
-        multiDexEnabled false
+        versionCode 37
+        versionName '3.7'
     }
 
     buildTypes {
@@ -22,7 +21,6 @@ android {
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             signingConfig signingConfigs.debug
-            multiDexEnabled false
         }
     }
 
